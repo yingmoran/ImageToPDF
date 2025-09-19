@@ -1,20 +1,104 @@
 package main
 
 import (
-	"fmt"
 	"image"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/AlecAivazis/survey/v2"
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/widget"
 	"github.com/ncruces/zenity"
 	"github.com/signintech/gopdf"
 )
 
 func main() {
-	imageFiles, err := zenity.SelectFileMultiple(
+	myApp := app.New()
+	indexWindow := myApp.NewWindow("图片转PDF")
+	// 标题标签
+	titleLabel := widget.NewLabel("图片转PDF")
+	// 创建一个占位布局，用来展示文件列表
+	fileListContainer := container.NewVBox()
+	// 选择图片按钮
+	selectImageButton := widget.NewButton("选择图片", func() {
+		imageFiles, _ := zenity.SelectFileMultiple(
+			zenity.Title("选择你需要转换的图片"),
+			zenity.Filename("."),
+			zenity.FileFilters{
+				{"图片文件", []string{"*.png", "*.gif", "*.ico", "*.jpg", "*.webp"}, true},
+			},
+		)
+		for _, imageFilePath := range imageFiles {
+			var imageInfoContainer *fyne.Container
+			imageInfoContainer = container.NewHBox(
+				widget.NewButton("↑", func() {
+					i := getIndex(fileListContainer, imageInfoContainer)
+					if i == 0 {
+						return
+					}
+					var temp *fyne.Container
+					temp = fileListContainer.Objects[i-1].(*fyne.Container)
+					fileListContainer.Objects[i-1] = fileListContainer.Objects[i]
+					fileListContainer.Objects[i] = temp
+				}),
+				widget.NewButton("↓", func() {
+					i := getIndex(fileListContainer, imageInfoContainer)
+					if i == len(fileListContainer.Objects)-1 {
+						return
+					}
+					var temp *fyne.Container
+					temp = fileListContainer.Objects[i+1].(*fyne.Container)
+					fileListContainer.Objects[i+1] = fileListContainer.Objects[i]
+					fileListContainer.Objects[i] = temp
+				}),
+				widget.NewLabel(imageFilePath),
+				// 删除按钮，用来删除用不着的图片
+				widget.NewButton("删除", func() {
+					fileListContainer.Remove(imageInfoContainer)
+				}),
+			)
+			fileListContainer.Add(imageInfoContainer)
+		}
+	})
+	// 清空图片按钮
+	deleteImageButton := widget.NewButton("清空图片", func() {
+		fileListContainer.RemoveAll()
+	})
+	indexWindow.SetContent(container.NewVBox(
+		// 标题
+		container.New(layout.NewCenterLayout(), titleLabel),
+		container.New(layout.NewCenterLayout(), container.NewHBox(
+			// 选择图片按钮
+			selectImageButton,
+			// 清空图片按钮
+			deleteImageButton,
+		)),
+		container.New(layout.NewCenterLayout(), fileListContainer),
+		container.New(layout.NewCenterLayout(), container.NewHBox(
+			widget.NewButton("批量转换为PDF", func() {
+				imageFiles := getimageFilePath(fileListContainer)
+				if len(imageFiles) == 0 {
+					zenity.Warning("请选择至少一张图片", zenity.Title("警告"))
+				} else {
+					toSinglePDF(imageFiles)
+				}
+			}),
+			widget.NewButton("合并为一个PDF", func() {
+				imageFiles := getimageFilePath(fileListContainer)
+				if len(imageFiles) == 0 {
+					zenity.Warning("请选择至少一张图片", zenity.Title("警告"))
+				} else {
+					mergeIntoOnePDF(imageFiles)
+				}
+			}),
+		)),
+	))
+	indexWindow.ShowAndRun()
+	/*imageFiles, err := zenity.SelectFileMultiple(
 		zenity.Title("选择你需要转换的图片"),
 		zenity.Filename("."),
 		zenity.FileFilters{
@@ -36,7 +120,26 @@ func main() {
 	case 1:
 		// 合并为一个PDF
 		mergeIntoOnePDF(imageFiles)
+	}*/
+}
+
+func getIndex(fileListContainer *fyne.Container, imageInfoContainer *fyne.Container) int {
+	for i, imageInfoContaineri := range fileListContainer.Objects {
+		if imageInfoContainer == imageInfoContaineri {
+			return i
+		}
 	}
+	return 0
+}
+
+func getimageFilePath(fileListContainer *fyne.Container) []string {
+	var imageFiles []string
+	// 获取图片列表内的图片
+	for _, imageOption := range fileListContainer.Objects {
+		imageFilePath := imageOption.(*fyne.Container).Objects[2].(*widget.Label).Text
+		imageFiles = append(imageFiles, imageFilePath)
+	}
+	return imageFiles
 }
 
 // calculateSize 计算图片应该在PDF里面的位置和大小
@@ -82,9 +185,9 @@ func getImageInfo(imageFilePath string) (float64, float64) {
 func mergeIntoOnePDF(imageFiles []string) {
 	// 创建PDF实例
 	pdf := gopdf.GoPdf{}
-	size := sizeSelect(0)
+	// size := sizeSelect(0)
 	// 设置大小
-	pdf.Start(gopdf.Config{PageSize: *size})
+	pdf.Start(gopdf.Config{PageSize: *gopdf.PageSizeA4})
 	for _, imageFilePath := range imageFiles {
 		// 检查文件是否存在
 		if _, err := os.Stat(imageFilePath); os.IsNotExist(err) {
@@ -93,7 +196,7 @@ func mergeIntoOnePDF(imageFiles []string) {
 		}
 		// 添加新页面
 		pdf.AddPage()
-		width, height, x, y := calculateSize(imageFilePath, size)
+		width, height, x, y := calculateSize(imageFilePath, gopdf.PageSizeA4)
 		// 插入图片
 		if err := pdf.Image(imageFilePath, x, y, &gopdf.Rect{
 			W: width,
@@ -114,55 +217,63 @@ func mergeIntoOnePDF(imageFiles []string) {
 		return
 	}
 	if err := pdf.WritePdf(outputFilePath); err != nil {
-		log.Fatalf("保存PDF失败: %v", err)
+		zenity.Error("保存PDF失败")
+		return
 	}
+	zenity.Info("保存PDF成功", zenity.Title("提示"))
 }
 
-// 分别转换为PDF
+// toSinglePDF 批量保存为PDF
 func toSinglePDF(imageFiles []string) {
 	// 获取图片尺寸
-	size := sizeSelect(1)
+	// size := sizeSelect(1)
 	// 设置PDF的保存路径
-	outputFileFolderPath, _ := zenity.SelectFileSave(
+	outputFileFolderPath, err := zenity.SelectFileSave(
 		zenity.Title("请设置PDF保存路径"),
 		zenity.Directory(),
 		zenity.ConfirmOverwrite(),
 	)
+	if err != nil {
+		return
+	}
 	for _, imageFilePath := range imageFiles {
 		// 检查文件是否存在
 		if _, err := os.Stat(imageFilePath); os.IsNotExist(err) {
-			log.Printf("图片文件 %s 不存在，已跳过", imageFilePath)
+			// log.Printf("图片文件 %s 不存在，已跳过", imageFilePath)
 			continue
 		}
 		// 创建PDF实例
 		pdf := gopdf.GoPdf{}
-		if size == nil {
+		/*if size == nil {
 			w, h := getImageInfo(imageFilePath)
 			size = &gopdf.Rect{W: w, H: h}
-		}
+		}*/
 		// 设置大小
-		pdf.Start(gopdf.Config{PageSize: *size})
+		pdf.Start(gopdf.Config{PageSize: *gopdf.PageSizeA4})
 		// 新建页面
 		pdf.AddPage()
 		// 计算大小
-		imageWidth, imageHeight, x, y := calculateSize(imageFilePath, size)
+		imageWidth, imageHeight, x, y := calculateSize(imageFilePath, gopdf.PageSizeA4)
 		// 插入图片
 		if err := pdf.Image(imageFilePath, x, y, &gopdf.Rect{
 			W: imageWidth,
 			H: imageHeight,
 		}); err != nil {
-			log.Fatalf("图片 %v 插入失败，异常为：", err)
+			zenity.Error("图片 " + imageFilePath + "保存PDF失败")
+			return
 		}
 		pdfName := strings.TrimSuffix(filepath.Base(imageFilePath), filepath.Ext(imageFilePath)) + ".pdf"
 		// 保存图片为
 		if err := pdf.WritePdf(filepath.Join(outputFileFolderPath, pdfName)); err != nil {
-			log.Fatalf("图片 %v 保存PDF失败，异常为：%v", imageFilePath, err)
+			zenity.Error("图片 " + imageFilePath + "保存PDF失败")
+			return
 		}
 	}
+	zenity.Info("批量保存PDF成功", zenity.Title("提示"))
 }
 
 // sizeSelect 选择PDF尺寸大小
-func sizeSelect(state int) *gopdf.Rect {
+/*func sizeSelect(state int) *gopdf.Rect {
 	fmt.Println(state)
 	options := []string{"A0(2384x3371)", "A1(1685x2384)", "A2(1190x1684)", "A3(842x1190)", "A4(595x842)", "A5(420x595)", "设置为图片尺寸", "自定义长宽"}
 	if state != 1 {
@@ -220,3 +331,4 @@ func sizeSelect(state int) *gopdf.Rect {
 	}
 	return size
 }
+*/
